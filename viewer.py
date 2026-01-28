@@ -131,6 +131,9 @@ def find_newspaper_dirs() -> list[Path]:
 # Global state
 _pairs: list[tuple[Path, Path]] = []
 _base_dir: Path | None = None
+_xml_cache: dict[Path, tuple] = {}
+_image_dims_cache: dict[Path, tuple[int, int]] = {}
+_rendered_image_cache: dict[tuple, bytes] = {}  # (path, zoom) -> JPEG bytes
 
 
 def init_pairs():
@@ -141,6 +144,21 @@ def init_pairs():
         if dirs:
             _base_dir = dirs[0]
             _pairs = find_ocr_pairs(_base_dir)
+
+
+def get_parsed_xml(xml_path: Path):
+    """Get parsed XML data, using cache if available."""
+    if xml_path not in _xml_cache:
+        _xml_cache[xml_path] = parse_alto_xml(xml_path)
+    return _xml_cache[xml_path]
+
+
+def get_image_dims(image_path: Path) -> tuple[int, int]:
+    """Get image dimensions, using cache if available."""
+    if image_path not in _image_dims_cache:
+        with Image.open(image_path) as img:
+            _image_dims_cache[image_path] = (img.width, img.height)
+    return _image_dims_cache[image_path]
 
 
 HTML_TEMPLATE = """
@@ -300,6 +318,33 @@ HTML_TEMPLATE = """
             border: 2px dashed green;
             pointer-events: none;
         }
+        /* Left pane overlays (solid lines) */
+        .left-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        .left-composed-block {
+            position: absolute;
+            border: 2px solid orange;
+            pointer-events: none;
+        }
+        .left-illustration {
+            position: absolute;
+            border: 3px solid magenta;
+            pointer-events: none;
+        }
+        .left-text-line {
+            position: absolute;
+            border: 2px solid green;
+            pointer-events: none;
+        }
+        .left-string {
+            position: absolute;
+            border: 2px solid blue;
+            pointer-events: none;
+        }
         .loading {
             display: flex;
             align-items: center;
@@ -317,10 +362,10 @@ HTML_TEMPLATE = """
             <button id="nextBtn" onclick="navigate(1)">Next &gt;</button>
         </div>
         <div class="legend">
-            <label class="legend-item"><input type="checkbox" id="showComposedBlock" checked onchange="reloadPage()"><div class="legend-color" style="border: 2px solid orange;"></div> ComposedBlock</label>
-            <label class="legend-item"><input type="checkbox" id="showIllustration" checked onchange="reloadPage()"><div class="legend-color" style="border: 3px solid magenta;"></div> Illustration</label>
-            <label class="legend-item"><input type="checkbox" id="showTextLine" checked onchange="reloadPage()"><div class="legend-color" style="border: 2px solid green;"></div> TextLine</label>
-            <label class="legend-item"><input type="checkbox" id="showString" checked onchange="reloadPage()"><div class="legend-color" style="border: 2px solid blue;"></div> String</label>
+            <label class="legend-item"><input type="checkbox" id="showComposedBlock" checked onchange="updateOverlays()"><div class="legend-color" style="border: 2px solid orange;"></div> ComposedBlock</label>
+            <label class="legend-item"><input type="checkbox" id="showIllustration" checked onchange="updateOverlays()"><div class="legend-color" style="border: 3px solid magenta;"></div> Illustration</label>
+            <label class="legend-item"><input type="checkbox" id="showTextLine" checked onchange="updateOverlays()"><div class="legend-color" style="border: 2px solid green;"></div> TextLine</label>
+            <label class="legend-item"><input type="checkbox" id="showString" checked onchange="updateOverlays()"><div class="legend-color" style="border: 2px solid blue;"></div> String</label>
         </div>
         <div class="zoom-controls">
             <button onclick="adjustZoom(-1)">-</button>
@@ -347,16 +392,28 @@ HTML_TEMPLATE = """
         let currentIndex = 0;
         let totalPages = 0;
         let zoomLevel = 100;
+        let lastScrollPercent = { x: 0, y: 0 };
+        let cachedPageData = null;
 
         const leftPanel = document.getElementById('leftPanel');
         const rightPanel = document.getElementById('rightPanel');
+
+        // Track scroll position continuously
+        rightPanel.addEventListener('scroll', () => {
+            const maxScrollX = rightPanel.scrollWidth - rightPanel.clientWidth;
+            const maxScrollY = rightPanel.scrollHeight - rightPanel.clientHeight;
+            if (maxScrollX > 0 || maxScrollY > 0) {
+                lastScrollPercent.x = maxScrollX > 0 ? rightPanel.scrollLeft / maxScrollX : 0;
+                lastScrollPercent.y = maxScrollY > 0 ? rightPanel.scrollTop / maxScrollY : 0;
+            }
+        });
 
         function adjustZoom(delta) {
             const newZoom = zoomLevel + delta * 25;
             if (newZoom >= 25 && newZoom <= 400) {
                 zoomLevel = newZoom;
                 document.getElementById('zoomLevel').textContent = zoomLevel + '%';
-                loadPage(currentIndex);
+                loadPage(currentIndex, { scrollXPercent: lastScrollPercent.x, scrollYPercent: lastScrollPercent.y });
             }
         }
 
@@ -369,8 +426,77 @@ HTML_TEMPLATE = """
             };
         }
 
-        function reloadPage() {
-            loadPage(currentIndex);
+        function updateOverlays() {
+            // Just update overlays without reloading image
+            if (!cachedPageData) return;
+            const vis = getVisibilityParams();
+            const data = cachedPageData;
+
+            // Save scroll positions
+            const scrollTop = rightPanel.scrollTop;
+            const scrollLeft = rightPanel.scrollLeft;
+
+            // Update left pane overlay
+            const leftOverlay = leftPanel.querySelector('.left-overlay');
+            if (leftOverlay) {
+                let leftBoxes = '';
+                if (vis.composedBlock) {
+                    for (const block of data.composed_blocks) {
+                        leftBoxes += `<div class="left-composed-block" style="left:${block.x}px;top:${block.y}px;width:${block.width}px;height:${block.height}px;"></div>`;
+                    }
+                }
+                if (vis.illustration) {
+                    for (const ill of data.illustrations) {
+                        leftBoxes += `<div class="left-illustration" style="left:${ill.x}px;top:${ill.y}px;width:${ill.width}px;height:${ill.height}px;"></div>`;
+                    }
+                }
+                if (vis.textLine) {
+                    for (const line of data.lines) {
+                        leftBoxes += `<div class="left-text-line" style="left:${line.x}px;top:${line.y}px;width:${line.width}px;height:${line.height}px;"></div>`;
+                    }
+                }
+                if (vis.string) {
+                    for (const box of data.boxes) {
+                        leftBoxes += `<div class="left-string" style="left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px;"></div>`;
+                    }
+                }
+                leftOverlay.innerHTML = leftBoxes;
+            }
+
+            // Update right pane
+            const rightOverlay = rightPanel.querySelector('.text-overlay');
+            if (rightOverlay) {
+                let textHtml = '';
+                if (vis.composedBlock) {
+                    for (const block of data.composed_blocks) {
+                        textHtml += `<div class="composed-block" style="left:${block.x}px;top:${block.y}px;width:${block.width}px;height:${block.height}px;"></div>`;
+                    }
+                }
+                if (vis.illustration) {
+                    for (const ill of data.illustrations) {
+                        textHtml += `<div class="illustration" style="left:${ill.x}px;top:${ill.y}px;width:${ill.width}px;height:${ill.height}px;"></div>`;
+                    }
+                }
+                if (vis.textLine) {
+                    for (const line of data.lines) {
+                        textHtml += `<div class="text-line" style="left:${line.x}px;top:${line.y}px;width:${line.width}px;height:${line.height}px;"></div>`;
+                    }
+                }
+                for (const box of data.boxes) {
+                    const fontSize = Math.max(8, Math.floor(box.height * 0.7));
+                    const borderStyle = vis.string ? '1px dashed blue' : 'none';
+                    textHtml += `<div class="text-box" style="left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px;font-size:${fontSize}px;border:${borderStyle};">${escapeHtml(box.content)}</div>`;
+                }
+                rightOverlay.innerHTML = textHtml;
+            }
+
+            // Restore scroll positions
+            requestAnimationFrame(() => {
+                rightPanel.scrollTop = scrollTop;
+                rightPanel.scrollLeft = scrollLeft;
+                leftPanel.scrollTop = scrollTop;
+                leftPanel.scrollLeft = scrollLeft;
+            });
         }
 
         // Synchronized scrolling
@@ -398,7 +524,7 @@ HTML_TEMPLATE = """
             if (e.key === 'ArrowRight') navigate(1);
         });
 
-        async function loadPage(index) {
+        async function loadPage(index, restoreScroll = null) {
             currentIndex = index;
 
             // Update navigation
@@ -421,23 +547,53 @@ HTML_TEMPLATE = """
                     return;
                 }
 
+                cachedPageData = data;
                 totalPages = data.total_pages;
                 document.getElementById('pageInfo').textContent =
                     `Page ${currentIndex + 1} of ${totalPages}: ${data.filename}`;
 
-                // Load left panel (image with boxes)
-                const imgParams = `zoom=${zoomLevel}&composedBlock=${vis.composedBlock}&illustration=${vis.illustration}&textLine=${vis.textLine}&string=${vis.string}`;
-                leftPanel.innerHTML = `
-                    <div class="canvas-container">
+                // Load left panel (image with overlay boxes)
+                let leftHtml = `
+                    <div class="canvas-container" style="position: relative;">
                         <div class="loading" id="imageLoading">Image is rendering...</div>
-                        <img src="/api/image/${index}?${imgParams}" alt="Page image" onload="document.getElementById('imageLoading').style.display='none'" style="display:none" onload="this.style.display='block'">
-                    </div>
+                        <img src="/api/image/${index}?zoom=${zoomLevel}" alt="Page image" style="display:none">
+                        <div class="left-overlay" style="width: ${data.display_width}px; height: ${data.display_height}px;">
                 `;
-                // Show image when loaded
+                // ComposedBlock boxes (orange solid)
+                if (vis.composedBlock) {
+                    for (const block of data.composed_blocks) {
+                        leftHtml += `<div class="left-composed-block" style="left:${block.x}px;top:${block.y}px;width:${block.width}px;height:${block.height}px;"></div>`;
+                    }
+                }
+                // Illustration boxes (magenta solid)
+                if (vis.illustration) {
+                    for (const ill of data.illustrations) {
+                        leftHtml += `<div class="left-illustration" style="left:${ill.x}px;top:${ill.y}px;width:${ill.width}px;height:${ill.height}px;"></div>`;
+                    }
+                }
+                // TextLine boxes (green solid)
+                if (vis.textLine) {
+                    for (const line of data.lines) {
+                        leftHtml += `<div class="left-text-line" style="left:${line.x}px;top:${line.y}px;width:${line.width}px;height:${line.height}px;"></div>`;
+                    }
+                }
+                // String boxes (blue solid)
+                if (vis.string) {
+                    for (const box of data.boxes) {
+                        leftHtml += `<div class="left-string" style="left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px;"></div>`;
+                    }
+                }
+                leftHtml += '</div></div>';
+                leftPanel.innerHTML = leftHtml;
+
+                // Show image when loaded and sync scroll with right pane
                 const img = leftPanel.querySelector('img');
                 img.onload = () => {
                     document.getElementById('imageLoading').style.display = 'none';
                     img.style.display = 'block';
+                    // Sync left pane scroll to match right pane
+                    leftPanel.scrollTop = rightPanel.scrollTop;
+                    leftPanel.scrollLeft = rightPanel.scrollLeft;
                 };
 
                 // Load right panel (all bounding boxes)
@@ -498,6 +654,16 @@ HTML_TEMPLATE = """
                 }
                 textHtml += '</div>';
                 rightPanel.innerHTML = textHtml;
+
+                // Restore scroll position after right pane renders (it's faster than image)
+                if (restoreScroll) {
+                    requestAnimationFrame(() => {
+                        const maxScrollX = rightPanel.scrollWidth - rightPanel.clientWidth;
+                        const maxScrollY = rightPanel.scrollHeight - rightPanel.clientHeight;
+                        rightPanel.scrollLeft = restoreScroll.scrollXPercent * maxScrollX;
+                        rightPanel.scrollTop = restoreScroll.scrollYPercent * maxScrollY;
+                    });
+                }
 
             } catch (err) {
                 leftPanel.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
@@ -562,23 +728,23 @@ def api_page(index: int):
         return jsonify({"error": "Page not found"})
 
     xml_path, image_path = _pairs[index]
-    boxes, lines, illustrations, composed_blocks, page_width, page_height = parse_alto_xml(xml_path)
+    boxes, lines, illustrations, composed_blocks, page_width, page_height = get_parsed_xml(xml_path)
 
     # Get zoom level from query parameter (default 100%)
     zoom = int(request.args.get("zoom", 100))
     zoom_factor = zoom / 100.0
 
-    # Load image to get actual dimensions
+    # Get image dimensions from cache
     try:
-        image = Image.open(image_path)
-        base_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        img_width, img_height = get_image_dims(image_path)
+        base_scale = min(3200 / img_width, 3200 / img_height, 4.0)
         img_scale = base_scale * zoom_factor
-        display_width = int(image.width * img_scale)
-        display_height = int(image.height * img_scale)
+        display_width = int(img_width * img_scale)
+        display_height = int(img_height * img_scale)
 
         # Scale factors for boxes
-        box_scale_x = image.width / page_width
-        box_scale_y = image.height / page_height
+        box_scale_x = img_width / page_width
+        box_scale_y = img_height / page_height
 
         # Calculate scaled box positions for display
         scaled_boxes = []
@@ -656,7 +822,7 @@ def api_page(index: int):
 
 @app.route("/api/image/<int:index>")
 def api_image(index: int):
-    """Return the image with bounding boxes drawn."""
+    """Return the base image without bounding boxes (cached)."""
     from flask import request
     init_pairs()
 
@@ -664,81 +830,44 @@ def api_image(index: int):
         return "Not found", 404
 
     xml_path, image_path = _pairs[index]
-    boxes, lines, illustrations, composed_blocks, page_width, page_height = parse_alto_xml(xml_path)
 
     # Get zoom level from query parameter (default 100%)
     zoom = int(request.args.get("zoom", 100))
-    zoom_factor = zoom / 100.0
 
-    # Get visibility settings
-    show_composed_block = request.args.get("composedBlock", "true") == "true"
-    show_illustration = request.args.get("illustration", "true") == "true"
-    show_text_line = request.args.get("textLine", "true") == "true"
-    show_string = request.args.get("string", "true") == "true"
+    # Check cache
+    cache_key = (image_path, zoom)
+    if cache_key in _rendered_image_cache:
+        buffer = io.BytesIO(_rendered_image_cache[cache_key])
+        return send_file(buffer, mimetype="image/jpeg")
+
+    zoom_factor = zoom / 100.0
 
     try:
         image = Image.open(image_path)
+        orig_width, orig_height = image.width, image.height
 
         # Convert grayscale to RGB for display
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        base_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        base_scale = min(3200 / orig_width, 3200 / orig_height, 4.0)
         img_scale = base_scale * zoom_factor
-        display_width = int(image.width * img_scale)
-        display_height = int(image.height * img_scale)
-
-        # Scale boxes relative to image
-        box_scale_x = image.width / page_width
-        box_scale_y = image.height / page_height
-
-        # Draw bounding boxes on image
-        draw = ImageDraw.Draw(image)
-
-        # Draw ComposedBlock boxes in orange
-        if show_composed_block:
-            for block in composed_blocks:
-                x1 = int(block.x * box_scale_x)
-                y1 = int(block.y * box_scale_y)
-                x2 = int((block.x + block.width) * box_scale_x)
-                y2 = int((block.y + block.height) * box_scale_y)
-                draw.rectangle([x1, y1, x2, y2], outline="orange", width=2)
-
-        # Draw Illustration boxes in magenta
-        if show_illustration:
-            for ill in illustrations:
-                x1 = int(ill.x * box_scale_x)
-                y1 = int(ill.y * box_scale_y)
-                x2 = int((ill.x + ill.width) * box_scale_x)
-                y2 = int((ill.y + ill.height) * box_scale_y)
-                draw.rectangle([x1, y1, x2, y2], outline="magenta", width=3)
-
-        # Draw TextLine boxes in green
-        if show_text_line:
-            for line in lines:
-                x1 = int(line.x * box_scale_x)
-                y1 = int(line.y * box_scale_y)
-                x2 = int((line.x + line.width) * box_scale_x)
-                y2 = int((line.y + line.height) * box_scale_y)
-                draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
-
-        # Draw String boxes in blue
-        if show_string:
-            for box in boxes:
-                x1 = int(box.x * box_scale_x)
-                y1 = int(box.y * box_scale_y)
-                x2 = int((box.x + box.width) * box_scale_x)
-                y2 = int((box.y + box.height) * box_scale_y)
-                draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+        display_width = int(orig_width * img_scale)
+        display_height = int(orig_height * img_scale)
 
         # Resize for display
-        image = image.resize((display_width, display_height), Image.Resampling.LANCZOS)
+        image = image.resize((display_width, display_height), Image.Resampling.BILINEAR)
 
-        # Return as PNG
+        # Encode as JPEG
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
+        image.save(buffer, format="JPEG", quality=85)
+        jpeg_bytes = buffer.getvalue()
+
+        # Cache the result
+        _rendered_image_cache[cache_key] = jpeg_bytes
+
         buffer.seek(0)
-        return send_file(buffer, mimetype="image/png")
+        return send_file(buffer, mimetype="image/jpeg")
 
     except Exception as e:
         return str(e), 500
