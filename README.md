@@ -2,6 +2,11 @@
 
 Tools for unpacking and viewing digitized newspaper archives with OCR data.
 
+## Data 
+This repo contains this newspaper: https://www.nb.no/items/URN:NBN:no-nb_digavis_fremtiden_null_null_19770426_69_94_1  
+It is shared with the [CC-BY-NC license](https://creativecommons.org/licenses/by-nc/4.0/deed.en).  
+
+
 ## Scripts
 
 **unpack.py** - Extracts `.tar` files from a newspaper archive directory into `unpacked/`.

@@ -38,4 +38,4 @@ def unpack_directory(source_dir: str):
 
 
 if __name__ == "__main__":
-    unpack_directory("no-nb_digavis_fjellljom_null_null_19770426_91_46_1")
+    unpack_directory("no-nb_digavis_fremtiden_null_null_19770426_69_94_1")
