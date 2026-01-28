@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TextBlock Viewer</title>
+    <link rel="stylesheet" href="/static/block_viewer.css">
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <label>XML File:
+                <select id="fileSelect" onchange="loadFile()">
+                    {% for pair in pairs %}
+                    <option value="{{ loop.index0 }}">{{ pair[0].name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div class="nav">
+                <button id="prevBtn" onclick="navigate(-1)">&larr; Previous</button>
+                <div class="info" id="blockInfo">Loading...</div>
+                <button id="nextBtn" onclick="navigate(1)">Next &rarr;</button>
+            </div>
+            <div class="keyboard-hint">Use arrow keys &larr; &rarr; to navigate</div>
+        </div>
+        <div class="content">
+            <div class="panel">
+                <div class="panel-header">Image</div>
+                <div class="panel-body">
+                    <div class="image-container">
+                        <img id="blockImage" src="" alt="Block image">
+                    </div>
+                    <div class="legend">
+                        <span class="line-box">■ TextLine</span>
+                        <span class="word-box">■ String/Word</span>
+                    </div>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">OCR Text</div>
+                <div class="panel-body">
+                    <div class="text-content" id="blockText"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/block_viewer.js"></script>
+</body>
+</html>

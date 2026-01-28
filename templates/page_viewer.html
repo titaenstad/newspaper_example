@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Newspaper OCR Viewer</title>
+    <link rel="stylesheet" href="/static/page_viewer.css">
+</head>
+<body>
+    <div class="nav">
+        <div class="nav-group">
+            <button id="prevBtn" onclick="navigate(-1)">&lt; Previous</button>
+            <span class="page-info" id="pageInfo">Loading...</span>
+            <button id="nextBtn" onclick="navigate(1)">Next &gt;</button>
+        </div>
+        <div class="legend">
+            <label class="legend-item"><input type="checkbox" id="showComposedBlock" checked onchange="updateOverlays()"><div class="legend-color" style="border: 2px solid orange;"></div> ComposedBlock</label>
+            <label class="legend-item"><input type="checkbox" id="showIllustration" checked onchange="updateOverlays()"><div class="legend-color" style="border: 3px solid magenta;"></div> Illustration</label>
+            <label class="legend-item"><input type="checkbox" id="showTextLine" checked onchange="updateOverlays()"><div class="legend-color" style="border: 2px solid green;"></div> TextLine</label>
+            <label class="legend-item"><input type="checkbox" id="showString" checked onchange="updateOverlays()"><div class="legend-color" style="border: 2px solid blue;"></div> String</label>
+        </div>
+        <div class="zoom-controls">
+            <button onclick="adjustZoom(-1)">-</button>
+            <span class="zoom-level" id="zoomLevel">100%</span>
+            <button onclick="adjustZoom(1)">+</button>
+        </div>
+    </div>
+    <div class="container">
+        <div class="panel left-panel">
+            <div class="panel-header">Image with Bounding Boxes</div>
+            <div class="panel-content" id="leftPanel">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+        <div class="panel right-panel">
+            <div class="panel-header">Text and Bounding Boxes</div>
+            <div class="panel-content" id="rightPanel">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/page_viewer.js"></script>
+</body>
+</html>
