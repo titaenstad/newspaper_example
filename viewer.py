@@ -36,8 +36,30 @@ class TextLine:
     height: int
 
 
-def parse_alto_xml(xml_path: Path) -> tuple[list[TextBox], list[TextLine], int, int]:
-    """Parse ALTO XML and return list of text boxes, text lines, and page dimensions."""
+@dataclass
+class Illustration:
+    """An illustration with its bounding box."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+    type: str
+
+
+@dataclass
+class ComposedBlock:
+    """A composed block (article) with its bounding box."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+    id: str
+
+
+def parse_alto_xml(xml_path: Path) -> tuple[list[TextBox], list[TextLine], list[Illustration], list[ComposedBlock], int, int]:
+    """Parse ALTO XML and return text boxes, text lines, illustrations, composed blocks, and page dimensions."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
@@ -63,7 +85,25 @@ def parse_alto_xml(xml_path: Path) -> tuple[list[TextBox], list[TextLine], int, 
         height = int(line.get("HEIGHT", 0))
         lines.append(TextLine(x, y, width, height))
 
-    return boxes, lines, page_width, page_height
+    illustrations = []
+    for ill in root.findall(".//alto:Illustration", ALTO_NS):
+        x = int(ill.get("HPOS", 0))
+        y = int(ill.get("VPOS", 0))
+        width = int(ill.get("WIDTH", 0))
+        height = int(ill.get("HEIGHT", 0))
+        ill_type = ill.get("TYPE", "")
+        illustrations.append(Illustration(x, y, width, height, ill_type))
+
+    composed_blocks = []
+    for block in root.findall(".//alto:ComposedBlock", ALTO_NS):
+        x = int(block.get("HPOS", 0))
+        y = int(block.get("VPOS", 0))
+        width = int(block.get("WIDTH", 0))
+        height = int(block.get("HEIGHT", 0))
+        block_id = block.get("ID", "")
+        composed_blocks.append(ComposedBlock(x, y, width, height, block_id))
+
+    return boxes, lines, illustrations, composed_blocks, page_width, page_height
 
 
 def find_ocr_pairs(base_dir: Path) -> list[tuple[Path, Path]]:
@@ -131,6 +171,11 @@ HTML_TEMPLATE = """
             background: #2a2a2a;
             border-bottom: 1px solid #444;
         }
+        .nav-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
         .nav button {
             padding: 8px 16px;
             background: #444;
@@ -150,6 +195,37 @@ HTML_TEMPLATE = """
         .page-info {
             font-size: 14px;
             color: #aaa;
+        }
+        .zoom-controls {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .zoom-controls button {
+            padding: 4px 12px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .zoom-level {
+            font-size: 12px;
+            color: #aaa;
+            min-width: 50px;
+            text-align: center;
+        }
+        .legend {
+            display: flex;
+            gap: 15px;
+            font-size: 11px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 2px;
         }
         .container {
             display: flex;
@@ -195,7 +271,7 @@ HTML_TEMPLATE = """
         }
         .text-box {
             position: absolute;
-            border: 1px solid blue;
+            border: 1px dashed blue;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -205,9 +281,19 @@ HTML_TEMPLATE = """
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .illustration {
+            position: absolute;
+            border: 3px dashed magenta;
+            pointer-events: none;
+        }
+        .composed-block {
+            position: absolute;
+            border: 2px dashed orange;
+            pointer-events: none;
+        }
         .text-line {
             position: absolute;
-            border: 2px solid green;
+            border: 2px dashed green;
             pointer-events: none;
         }
         .loading {
@@ -221,9 +307,22 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="nav">
-        <button id="prevBtn" onclick="navigate(-1)">&lt; Previous</button>
-        <span class="page-info" id="pageInfo">Loading...</span>
-        <button id="nextBtn" onclick="navigate(1)">Next &gt;</button>
+        <div class="nav-group">
+            <button id="prevBtn" onclick="navigate(-1)">&lt; Previous</button>
+            <span class="page-info" id="pageInfo">Loading...</span>
+            <button id="nextBtn" onclick="navigate(1)">Next &gt;</button>
+        </div>
+        <div class="legend">
+            <div class="legend-item"><div class="legend-color" style="border: 2px solid orange;"></div> ComposedBlock</div>
+            <div class="legend-item"><div class="legend-color" style="border: 3px solid magenta;"></div> Illustration</div>
+            <div class="legend-item"><div class="legend-color" style="border: 2px solid green;"></div> TextLine</div>
+            <div class="legend-item"><div class="legend-color" style="border: 2px solid blue;"></div> String</div>
+        </div>
+        <div class="zoom-controls">
+            <button onclick="adjustZoom(-1)">-</button>
+            <span class="zoom-level" id="zoomLevel">100%</span>
+            <button onclick="adjustZoom(1)">+</button>
+        </div>
     </div>
     <div class="container">
         <div class="panel left-panel">
@@ -243,9 +342,19 @@ HTML_TEMPLATE = """
     <script>
         let currentIndex = 0;
         let totalPages = 0;
+        let zoomLevel = 100;
 
         const leftPanel = document.getElementById('leftPanel');
         const rightPanel = document.getElementById('rightPanel');
+
+        function adjustZoom(delta) {
+            const newZoom = zoomLevel + delta * 25;
+            if (newZoom >= 25 && newZoom <= 400) {
+                zoomLevel = newZoom;
+                document.getElementById('zoomLevel').textContent = zoomLevel + '%';
+                loadPage(currentIndex);
+            }
+        }
 
         // Synchronized scrolling
         let syncing = false;
@@ -285,7 +394,7 @@ HTML_TEMPLATE = """
 
             try {
                 // Get page data
-                const response = await fetch(`/api/page/${index}`);
+                const response = await fetch(`/api/page/${index}?zoom=${zoomLevel}`);
                 const data = await response.json();
 
                 if (data.error) {
@@ -301,8 +410,8 @@ HTML_TEMPLATE = """
                 // Load left panel (image with boxes)
                 leftPanel.innerHTML = `
                     <div class="canvas-container">
-                        <div class="loading" id="imageLoading">Image is loading...</div>
-                        <img src="/api/image/${index}" alt="Page image" onload="document.getElementById('imageLoading').style.display='none'" style="display:none" onload="this.style.display='block'">
+                        <div class="loading" id="imageLoading">Image is rendering...</div>
+                        <img src="/api/image/${index}?zoom=${zoomLevel}" alt="Page image" onload="document.getElementById('imageLoading').style.display='none'" style="display:none" onload="this.style.display='block'">
                     </div>
                 `;
                 // Show image when loaded
@@ -312,9 +421,31 @@ HTML_TEMPLATE = """
                     img.style.display = 'block';
                 };
 
-                // Load right panel (text lines and text boxes)
+                // Load right panel (all bounding boxes)
                 let textHtml = `<div class="text-overlay" style="width: ${data.display_width}px; height: ${data.display_height}px; position: relative;">`;
-                // Draw TextLine boxes first (green)
+                // Draw ComposedBlock boxes first (orange dashed, background)
+                for (const block of data.composed_blocks) {
+                    textHtml += `
+                        <div class="composed-block" style="
+                            left: ${block.x}px;
+                            top: ${block.y}px;
+                            width: ${block.width}px;
+                            height: ${block.height}px;
+                        "></div>
+                    `;
+                }
+                // Draw Illustration boxes (magenta)
+                for (const ill of data.illustrations) {
+                    textHtml += `
+                        <div class="illustration" style="
+                            left: ${ill.x}px;
+                            top: ${ill.y}px;
+                            width: ${ill.width}px;
+                            height: ${ill.height}px;
+                        "></div>
+                    `;
+                }
+                // Draw TextLine boxes (green)
                 for (const line of data.lines) {
                     textHtml += `
                         <div class="text-line" style="
@@ -395,18 +526,24 @@ def api_info():
 @app.route("/api/page/<int:index>")
 def api_page(index: int):
     """Return page data (boxes and dimensions) for a specific page."""
+    from flask import request
     init_pairs()
 
     if not _pairs or index < 0 or index >= len(_pairs):
         return jsonify({"error": "Page not found"})
 
     xml_path, image_path = _pairs[index]
-    boxes, lines, page_width, page_height = parse_alto_xml(xml_path)
+    boxes, lines, illustrations, composed_blocks, page_width, page_height = parse_alto_xml(xml_path)
+
+    # Get zoom level from query parameter (default 100%)
+    zoom = int(request.args.get("zoom", 100))
+    zoom_factor = zoom / 100.0
 
     # Load image to get actual dimensions
     try:
         image = Image.open(image_path)
-        img_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        base_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        img_scale = base_scale * zoom_factor
         display_width = int(image.width * img_scale)
         display_height = int(image.height * img_scale)
 
@@ -443,13 +580,45 @@ def api_page(index: int):
                 "height": h
             })
 
+        # Calculate scaled illustration positions for display
+        scaled_illustrations = []
+        for ill in illustrations:
+            x1 = int(ill.x * box_scale_x * img_scale)
+            y1 = int(ill.y * box_scale_y * img_scale)
+            w = int(ill.width * box_scale_x * img_scale)
+            h = int(ill.height * box_scale_y * img_scale)
+            scaled_illustrations.append({
+                "x": x1,
+                "y": y1,
+                "width": w,
+                "height": h,
+                "type": ill.type
+            })
+
+        # Calculate scaled composed block positions for display
+        scaled_composed_blocks = []
+        for block in composed_blocks:
+            x1 = int(block.x * box_scale_x * img_scale)
+            y1 = int(block.y * box_scale_y * img_scale)
+            w = int(block.width * box_scale_x * img_scale)
+            h = int(block.height * box_scale_y * img_scale)
+            scaled_composed_blocks.append({
+                "x": x1,
+                "y": y1,
+                "width": w,
+                "height": h,
+                "id": block.id
+            })
+
         return jsonify({
             "filename": xml_path.stem,
             "total_pages": len(_pairs),
             "display_width": display_width,
             "display_height": display_height,
             "boxes": scaled_boxes,
-            "lines": scaled_lines
+            "lines": scaled_lines,
+            "illustrations": scaled_illustrations,
+            "composed_blocks": scaled_composed_blocks
         })
 
     except Exception as e:
@@ -459,13 +628,18 @@ def api_page(index: int):
 @app.route("/api/image/<int:index>")
 def api_image(index: int):
     """Return the image with bounding boxes drawn."""
+    from flask import request
     init_pairs()
 
     if not _pairs or index < 0 or index >= len(_pairs):
         return "Not found", 404
 
     xml_path, image_path = _pairs[index]
-    boxes, lines, page_width, page_height = parse_alto_xml(xml_path)
+    boxes, lines, illustrations, composed_blocks, page_width, page_height = parse_alto_xml(xml_path)
+
+    # Get zoom level from query parameter (default 100%)
+    zoom = int(request.args.get("zoom", 100))
+    zoom_factor = zoom / 100.0
 
     try:
         image = Image.open(image_path)
@@ -474,7 +648,8 @@ def api_image(index: int):
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        img_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        base_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        img_scale = base_scale * zoom_factor
         display_width = int(image.width * img_scale)
         display_height = int(image.height * img_scale)
 
@@ -485,6 +660,22 @@ def api_image(index: int):
         # Draw bounding boxes on image
         draw = ImageDraw.Draw(image)
 
+        # Draw ComposedBlock boxes in orange (dashed effect via multiple rectangles)
+        for block in composed_blocks:
+            x1 = int(block.x * box_scale_x)
+            y1 = int(block.y * box_scale_y)
+            x2 = int((block.x + block.width) * box_scale_x)
+            y2 = int((block.y + block.height) * box_scale_y)
+            draw.rectangle([x1, y1, x2, y2], outline="orange", width=2)
+
+        # Draw Illustration boxes in magenta
+        for ill in illustrations:
+            x1 = int(ill.x * box_scale_x)
+            y1 = int(ill.y * box_scale_y)
+            x2 = int((ill.x + ill.width) * box_scale_x)
+            y2 = int((ill.y + ill.height) * box_scale_y)
+            draw.rectangle([x1, y1, x2, y2], outline="magenta", width=3)
+
         # Draw TextLine boxes in green
         for line in lines:
             x1 = int(line.x * box_scale_x)
@@ -493,13 +684,13 @@ def api_image(index: int):
             y2 = int((line.y + line.height) * box_scale_y)
             draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
 
-        # Draw String boxes in red
+        # Draw String boxes in blue
         for box in boxes:
             x1 = int(box.x * box_scale_x)
             y1 = int(box.y * box_scale_y)
             x2 = int((box.x + box.width) * box_scale_x)
             y2 = int((box.y + box.height) * box_scale_y)
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
+            draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
 
         # Resize for display
         image = image.resize((display_width, display_height), Image.Resampling.LANCZOS)
