@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Simple viewer for newspaper OCR XML files with bounding box overlay."""
+"""Simple viewer for newspaper OCR XML files with bounding box overlay - Flask version."""
 
-import tkinter as tk
-from tkinter import ttk
+from flask import Flask, render_template_string, send_file, jsonify
 from pathlib import Path
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 import io
 
 from PIL import Image, ImageDraw
+
+app = Flask(__name__)
 
 ALTO_NS = {"alto": "http://www.loc.gov/standards/alto/ns-v2#"}
 UNPACKED_DIR = Path("unpacked")
@@ -25,8 +26,18 @@ class TextBox:
     height: int
 
 
-def parse_alto_xml(xml_path: Path) -> tuple[list[TextBox], int, int]:
-    """Parse ALTO XML and return list of text boxes and page dimensions."""
+@dataclass
+class TextLine:
+    """A text line with its bounding box."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+def parse_alto_xml(xml_path: Path) -> tuple[list[TextBox], list[TextLine], int, int]:
+    """Parse ALTO XML and return list of text boxes, text lines, and page dimensions."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
@@ -44,7 +55,15 @@ def parse_alto_xml(xml_path: Path) -> tuple[list[TextBox], int, int]:
         height = int(string.get("HEIGHT", 0))
         boxes.append(TextBox(content, x, y, width, height))
 
-    return boxes, page_width, page_height
+    lines = []
+    for line in root.findall(".//alto:TextLine", ALTO_NS):
+        x = int(line.get("HPOS", 0))
+        y = int(line.get("VPOS", 0))
+        width = int(line.get("WIDTH", 0))
+        height = int(line.get("HEIGHT", 0))
+        lines.append(TextLine(x, y, width, height))
+
+    return boxes, lines, page_width, page_height
 
 
 def find_ocr_pairs(base_dir: Path) -> list[tuple[Path, Path]]:
@@ -62,215 +81,437 @@ def find_ocr_pairs(base_dir: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-class NewspaperViewer:
-    """Main viewer application."""
-
-    def __init__(self, root: tk.Tk, base_dir: Path):
-        self.root = root
-        self.root.title("Newspaper OCR Viewer")
-
-        self.pairs = find_ocr_pairs(base_dir)
-        self.current_index = 0
-
-        if not self.pairs:
-            ttk.Label(root, text="No OCR files found").pack()
-            return
-
-        self.setup_ui()
-        self.load_current()
-
-    def setup_ui(self):
-        """Set up the user interface."""
-        # Navigation frame
-        nav_frame = ttk.Frame(self.root)
-        nav_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-
-        self.prev_btn = ttk.Button(nav_frame, text="< Previous", command=self.prev_page)
-        self.prev_btn.pack(side=tk.LEFT)
-
-        self.page_label = ttk.Label(nav_frame, text="")
-        self.page_label.pack(side=tk.LEFT, expand=True)
-
-        self.next_btn = ttk.Button(nav_frame, text="Next >", command=self.next_page)
-        self.next_btn.pack(side=tk.RIGHT)
-
-        # Main container with shared scrollbars
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Shared scrollbars
-        self.scroll_y = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=self.sync_yview)
-        self.scroll_x = ttk.Scrollbar(main_frame, orient=tk.HORIZONTAL, command=self.sync_xview)
-
-        # Content frame for the two panels
-        content_frame = ttk.Frame(main_frame)
-
-        # Left panel: Image with bounding boxes
-        left_frame = ttk.LabelFrame(content_frame, text="Image with Bounding Boxes")
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 2))
-
-        self.left_canvas = tk.Canvas(left_frame, bg="gray")
-        self.left_canvas.pack(fill=tk.BOTH, expand=True)
-
-        # Right panel: Bounding boxes with text only
-        right_frame = ttk.LabelFrame(content_frame, text="Text and Bounding Boxes")
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(2, 0))
-
-        self.right_canvas = tk.Canvas(right_frame, bg="white")
-        self.right_canvas.pack(fill=tk.BOTH, expand=True)
-
-        # Configure canvases to report scroll position to shared scrollbar
-        self.left_canvas.configure(
-            yscrollcommand=self.sync_scroll_y,
-            xscrollcommand=self.sync_scroll_x
-        )
-        self.right_canvas.configure(
-            yscrollcommand=self.sync_scroll_y,
-            xscrollcommand=self.sync_scroll_x
-        )
-
-        # Layout with grid for proper scrollbar placement
-        self.scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-        self.scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-        content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Keyboard bindings
-        self.root.bind("<Left>", lambda e: self.prev_page())
-        self.root.bind("<Right>", lambda e: self.next_page())
-
-        # Mouse wheel scrolling
-        self.left_canvas.bind("<MouseWheel>", self.on_mousewheel)
-        self.right_canvas.bind("<MouseWheel>", self.on_mousewheel)
-        # Linux mouse wheel
-        self.left_canvas.bind("<Button-4>", lambda e: self.on_mousewheel_linux(-1))
-        self.left_canvas.bind("<Button-5>", lambda e: self.on_mousewheel_linux(1))
-        self.right_canvas.bind("<Button-4>", lambda e: self.on_mousewheel_linux(-1))
-        self.right_canvas.bind("<Button-5>", lambda e: self.on_mousewheel_linux(1))
-
-    def sync_yview(self, *args):
-        """Scroll both canvases vertically."""
-        self.left_canvas.yview(*args)
-        self.right_canvas.yview(*args)
-
-    def sync_xview(self, *args):
-        """Scroll both canvases horizontally."""
-        self.left_canvas.xview(*args)
-        self.right_canvas.xview(*args)
-
-    def sync_scroll_y(self, first, last):
-        """Update shared vertical scrollbar."""
-        self.scroll_y.set(first, last)
-
-    def sync_scroll_x(self, first, last):
-        """Update shared horizontal scrollbar."""
-        self.scroll_x.set(first, last)
-
-    def on_mousewheel(self, event):
-        """Handle mouse wheel scrolling (Windows/Mac)."""
-        self.left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    def on_mousewheel_linux(self, direction):
-        """Handle mouse wheel scrolling (Linux)."""
-        self.left_canvas.yview_scroll(direction, "units")
-        self.right_canvas.yview_scroll(direction, "units")
-
-    def load_current(self):
-        """Load the current XML/image pair."""
-        xml_path, image_path = self.pairs[self.current_index]
-
-        # Update page label
-        self.page_label.config(
-            text=f"Page {self.current_index + 1} of {len(self.pairs)}: {xml_path.stem}"
-        )
-
-        # Update button states
-        self.prev_btn.config(state=tk.NORMAL if self.current_index > 0 else tk.DISABLED)
-        self.next_btn.config(state=tk.NORMAL if self.current_index < len(self.pairs) - 1 else tk.DISABLED)
-
-        # Parse XML
-        boxes, page_width, page_height = parse_alto_xml(xml_path)
-
-        # Load and display image with bounding boxes
-        try:
-            image = Image.open(image_path)
-            # Convert grayscale to RGB for display
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            img_scale = min(1600 / image.width, 1600 / image.height, 2.0)
-            display_width = int(image.width * img_scale)
-            display_height = int(image.height * img_scale)
-
-            # Scale boxes relative to image
-            box_scale_x = image.width / page_width
-            box_scale_y = image.height / page_height
-
-            # Draw bounding boxes on image
-            overlay = image.copy()
-            draw = ImageDraw.Draw(overlay)
-            for box in boxes:
-                x1 = int(box.x * box_scale_x)
-                y1 = int(box.y * box_scale_y)
-                x2 = int((box.x + box.width) * box_scale_x)
-                y2 = int((box.y + box.height) * box_scale_y)
-                draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
-
-            # Resize for display
-            overlay = overlay.resize((display_width, display_height), Image.Resampling.LANCZOS)
-            # Use PNG bytes workaround for ImageTk compatibility
-            buffer = io.BytesIO()
-            overlay.save(buffer, format="PNG")
-            self.left_photo = tk.PhotoImage(data=buffer.getvalue())
-
-            self.left_canvas.delete("all")
-            self.left_canvas.create_image(0, 0, anchor=tk.NW, image=self.left_photo)
-            self.left_canvas.configure(scrollregion=(0, 0, display_width, display_height))
-
-            # Draw bounding boxes with text on right panel
-            # Use same scaling as left panel for consistency
-            self.right_canvas.delete("all")
-            right_scale_x = display_width / page_width
-            right_scale_y = display_height / page_height
-
-            for box in boxes:
-                x1 = int(box.x * right_scale_x)
-                y1 = int(box.y * right_scale_y)
-                x2 = int((box.x + box.width) * right_scale_x)
-                y2 = int((box.y + box.height) * right_scale_y)
-
-                self.right_canvas.create_rectangle(x1, y1, x2, y2, outline="blue", width=1)
-                # Draw text centered in box
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
-                self.right_canvas.create_text(cx, cy, text=box.content, font=("TkDefaultFont", 8))
-
-            self.right_canvas.configure(scrollregion=(0, 0, display_width, display_height))
-
-        except Exception as e:
-            print(f"Error loading image: {e}")
-            import traceback
-            traceback.print_exc()
-            self.left_canvas.delete("all")
-            self.left_canvas.create_text(10, 10, anchor=tk.NW, text=f"Error loading image: {e}")
-
-    def prev_page(self):
-        """Go to previous page."""
-        if self.current_index > 0:
-            self.current_index -= 1
-            self.load_current()
-
-    def next_page(self):
-        """Go to next page."""
-        if self.current_index < len(self.pairs) - 1:
-            self.current_index += 1
-            self.load_current()
-
-
 def find_newspaper_dirs() -> list[Path]:
     """Find all newspaper directories in the unpacked folder."""
     if not UNPACKED_DIR.exists():
         return []
     return [d for d in UNPACKED_DIR.iterdir() if d.is_dir()]
+
+
+# Global state
+_pairs: list[tuple[Path, Path]] = []
+_base_dir: Path | None = None
+
+
+def init_pairs():
+    """Initialize the OCR pairs."""
+    global _pairs, _base_dir
+    if not _pairs:
+        dirs = find_newspaper_dirs()
+        if dirs:
+            _base_dir = dirs[0]
+            _pairs = find_ocr_pairs(_base_dir)
+
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Newspaper OCR Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: #2a2a2a;
+            border-bottom: 1px solid #444;
+        }
+        .nav button {
+            padding: 8px 16px;
+            background: #444;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .nav button:hover:not(:disabled) {
+            background: #555;
+        }
+        .nav button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .page-info {
+            font-size: 14px;
+            color: #aaa;
+        }
+        .container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #444;
+            margin: 10px;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .panel-header {
+            padding: 8px 12px;
+            background: #333;
+            border-bottom: 1px solid #444;
+            font-size: 13px;
+            color: #aaa;
+        }
+        .panel-content {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+        .left-panel .panel-content {
+            background: #333;
+        }
+        .right-panel .panel-content {
+            background: #fff;
+        }
+        .canvas-container {
+            position: relative;
+            display: inline-block;
+        }
+        .canvas-container img {
+            display: block;
+        }
+        .text-overlay {
+            position: relative;
+        }
+        .text-box {
+            position: absolute;
+            border: 1px solid blue;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            color: #000;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .text-line {
+            position: absolute;
+            border: 2px solid green;
+            pointer-events: none;
+        }
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <button id="prevBtn" onclick="navigate(-1)">&lt; Previous</button>
+        <span class="page-info" id="pageInfo">Loading...</span>
+        <button id="nextBtn" onclick="navigate(1)">Next &gt;</button>
+    </div>
+    <div class="container">
+        <div class="panel left-panel">
+            <div class="panel-header">Image with Bounding Boxes</div>
+            <div class="panel-content" id="leftPanel">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+        <div class="panel right-panel">
+            <div class="panel-header">Text and Bounding Boxes</div>
+            <div class="panel-content" id="rightPanel">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentIndex = 0;
+        let totalPages = 0;
+
+        const leftPanel = document.getElementById('leftPanel');
+        const rightPanel = document.getElementById('rightPanel');
+
+        // Synchronized scrolling
+        let syncing = false;
+
+        leftPanel.addEventListener('scroll', () => {
+            if (syncing) return;
+            syncing = true;
+            rightPanel.scrollTop = leftPanel.scrollTop;
+            rightPanel.scrollLeft = leftPanel.scrollLeft;
+            syncing = false;
+        });
+
+        rightPanel.addEventListener('scroll', () => {
+            if (syncing) return;
+            syncing = true;
+            leftPanel.scrollTop = rightPanel.scrollTop;
+            leftPanel.scrollLeft = rightPanel.scrollLeft;
+            syncing = false;
+        });
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') navigate(-1);
+            if (e.key === 'ArrowRight') navigate(1);
+        });
+
+        async function loadPage(index) {
+            currentIndex = index;
+
+            // Update navigation
+            document.getElementById('prevBtn').disabled = currentIndex <= 0;
+            document.getElementById('nextBtn').disabled = currentIndex >= totalPages - 1;
+
+            // Show loading
+            leftPanel.innerHTML = '<div class="loading">Loading...</div>';
+            rightPanel.innerHTML = '<div class="loading">Loading...</div>';
+
+            try {
+                // Get page data
+                const response = await fetch(`/api/page/${index}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    leftPanel.innerHTML = `<div class="loading">${data.error}</div>`;
+                    rightPanel.innerHTML = `<div class="loading">${data.error}</div>`;
+                    return;
+                }
+
+                totalPages = data.total_pages;
+                document.getElementById('pageInfo').textContent =
+                    `Page ${currentIndex + 1} of ${totalPages}: ${data.filename}`;
+
+                // Load left panel (image with boxes)
+                leftPanel.innerHTML = `
+                    <div class="canvas-container">
+                        <div class="loading" id="imageLoading">Image is loading...</div>
+                        <img src="/api/image/${index}" alt="Page image" onload="document.getElementById('imageLoading').style.display='none'" style="display:none" onload="this.style.display='block'">
+                    </div>
+                `;
+                // Show image when loaded
+                const img = leftPanel.querySelector('img');
+                img.onload = () => {
+                    document.getElementById('imageLoading').style.display = 'none';
+                    img.style.display = 'block';
+                };
+
+                // Load right panel (text lines and text boxes)
+                let textHtml = `<div class="text-overlay" style="width: ${data.display_width}px; height: ${data.display_height}px; position: relative;">`;
+                // Draw TextLine boxes first (green)
+                for (const line of data.lines) {
+                    textHtml += `
+                        <div class="text-line" style="
+                            left: ${line.x}px;
+                            top: ${line.y}px;
+                            width: ${line.width}px;
+                            height: ${line.height}px;
+                        "></div>
+                    `;
+                }
+                // Draw String boxes on top (blue)
+                for (const box of data.boxes) {
+                    textHtml += `
+                        <div class="text-box" style="
+                            left: ${box.x}px;
+                            top: ${box.y}px;
+                            width: ${box.width}px;
+                            height: ${box.height}px;
+                        ">${escapeHtml(box.content)}</div>
+                    `;
+                }
+                textHtml += '</div>';
+                rightPanel.innerHTML = textHtml;
+
+            } catch (err) {
+                leftPanel.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
+                rightPanel.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function navigate(delta) {
+            const newIndex = currentIndex + delta;
+            if (newIndex >= 0 && newIndex < totalPages) {
+                loadPage(newIndex);
+            }
+        }
+
+        // Initial load
+        fetch('/api/info').then(r => r.json()).then(data => {
+            totalPages = data.total_pages;
+            if (totalPages > 0) {
+                loadPage(0);
+            } else {
+                document.getElementById('pageInfo').textContent = 'No OCR files found';
+                leftPanel.innerHTML = '<div class="loading">No OCR files found. Run unpack.py first.</div>';
+                rightPanel.innerHTML = '<div class="loading">No OCR files found. Run unpack.py first.</div>';
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+
+@app.route("/")
+def index():
+    """Serve the main viewer page."""
+    init_pairs()
+    return render_template_string(HTML_TEMPLATE)
+
+
+@app.route("/api/info")
+def api_info():
+    """Return basic info about available pages."""
+    init_pairs()
+    return jsonify({
+        "total_pages": len(_pairs),
+        "base_dir": str(_base_dir) if _base_dir else None
+    })
+
+
+@app.route("/api/page/<int:index>")
+def api_page(index: int):
+    """Return page data (boxes and dimensions) for a specific page."""
+    init_pairs()
+
+    if not _pairs or index < 0 or index >= len(_pairs):
+        return jsonify({"error": "Page not found"})
+
+    xml_path, image_path = _pairs[index]
+    boxes, lines, page_width, page_height = parse_alto_xml(xml_path)
+
+    # Load image to get actual dimensions
+    try:
+        image = Image.open(image_path)
+        img_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        display_width = int(image.width * img_scale)
+        display_height = int(image.height * img_scale)
+
+        # Scale factors for boxes
+        box_scale_x = image.width / page_width
+        box_scale_y = image.height / page_height
+
+        # Calculate scaled box positions for display
+        scaled_boxes = []
+        for box in boxes:
+            x1 = int(box.x * box_scale_x * img_scale)
+            y1 = int(box.y * box_scale_y * img_scale)
+            w = int(box.width * box_scale_x * img_scale)
+            h = int(box.height * box_scale_y * img_scale)
+            scaled_boxes.append({
+                "content": box.content,
+                "x": x1,
+                "y": y1,
+                "width": w,
+                "height": h
+            })
+
+        # Calculate scaled line positions for display
+        scaled_lines = []
+        for line in lines:
+            x1 = int(line.x * box_scale_x * img_scale)
+            y1 = int(line.y * box_scale_y * img_scale)
+            w = int(line.width * box_scale_x * img_scale)
+            h = int(line.height * box_scale_y * img_scale)
+            scaled_lines.append({
+                "x": x1,
+                "y": y1,
+                "width": w,
+                "height": h
+            })
+
+        return jsonify({
+            "filename": xml_path.stem,
+            "total_pages": len(_pairs),
+            "display_width": display_width,
+            "display_height": display_height,
+            "boxes": scaled_boxes,
+            "lines": scaled_lines
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+@app.route("/api/image/<int:index>")
+def api_image(index: int):
+    """Return the image with bounding boxes drawn."""
+    init_pairs()
+
+    if not _pairs or index < 0 or index >= len(_pairs):
+        return "Not found", 404
+
+    xml_path, image_path = _pairs[index]
+    boxes, lines, page_width, page_height = parse_alto_xml(xml_path)
+
+    try:
+        image = Image.open(image_path)
+
+        # Convert grayscale to RGB for display
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        img_scale = min(3200 / image.width, 3200 / image.height, 4.0)
+        display_width = int(image.width * img_scale)
+        display_height = int(image.height * img_scale)
+
+        # Scale boxes relative to image
+        box_scale_x = image.width / page_width
+        box_scale_y = image.height / page_height
+
+        # Draw bounding boxes on image
+        draw = ImageDraw.Draw(image)
+
+        # Draw TextLine boxes in green
+        for line in lines:
+            x1 = int(line.x * box_scale_x)
+            y1 = int(line.y * box_scale_y)
+            x2 = int((line.x + line.width) * box_scale_x)
+            y2 = int((line.y + line.height) * box_scale_y)
+            draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
+
+        # Draw String boxes in red
+        for box in boxes:
+            x1 = int(box.x * box_scale_x)
+            y1 = int(box.y * box_scale_y)
+            x2 = int((box.x + box.width) * box_scale_x)
+            y2 = int((box.y + box.height) * box_scale_y)
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
+
+        # Resize for display
+        image = image.resize((display_width, display_height), Image.Resampling.LANCZOS)
+
+        # Return as PNG
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        return send_file(buffer, mimetype="image/png")
+
+    except Exception as e:
+        return str(e), 500
 
 
 def main():
@@ -280,14 +521,9 @@ def main():
         print("No unpacked newspaper directories found. Run unpack.py first.")
         return
 
-    # Use the first directory found
-    base_dir = dirs[0]
-    print(f"Loading from: {base_dir}")
-
-    root = tk.Tk()
-    root.geometry("1400x900")
-    NewspaperViewer(root, base_dir)
-    root.mainloop()
+    print(f"Loading from: {dirs[0]}")
+    print("Starting server at http://127.0.0.1:5001/")
+    app.run(host="127.0.0.1", port=5001, debug=False)
 
 
 if __name__ == "__main__":
