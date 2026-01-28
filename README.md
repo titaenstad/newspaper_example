@@ -11,7 +11,7 @@ It is shared with the [CC-BY-NC license](https://creativecommons.org/licenses/by
 
 **unpack.py** - Extracts `.tar` files from a newspaper archive directory into `unpacked/`.
 
-**viewer.py** - GUI viewer showing newspaper pages side-by-side with OCR bounding boxes overlay.
+**page_viewer.py** - GUI viewer showing newspaper pages side-by-side with OCR bounding boxes overlay.
 
 **block_viewer.py** - GUI viewer for individual TextBlocks. Shows cropped image regions with TextLine (blue) and String (red) bounding boxes alongside extracted text. Select XML files from dropdown, navigate blocks with arrow keys.
 
@@ -26,10 +26,9 @@ uv sync
 uv run unpack.py
 
 # Launch the full page viewer
-uv run viewer.py
+uv run page_viewer.py
 
 # Launch the TextBlock viewer
 uv run block_viewer.py
 ```
 
-Use arrow keys or buttons to navigate.
