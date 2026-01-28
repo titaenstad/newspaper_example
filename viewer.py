@@ -275,7 +275,7 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 8px;
+            line-height: 1;
             color: #000;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -458,12 +458,14 @@ HTML_TEMPLATE = """
                 }
                 // Draw String boxes on top (blue)
                 for (const box of data.boxes) {
+                    const fontSize = Math.max(8, Math.floor(box.height * 0.7));
                     textHtml += `
                         <div class="text-box" style="
                             left: ${box.x}px;
                             top: ${box.y}px;
                             width: ${box.width}px;
                             height: ${box.height}px;
+                            font-size: ${fontSize}px;
                         ">${escapeHtml(box.content)}</div>
                     `;
                 }
