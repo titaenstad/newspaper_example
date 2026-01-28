@@ -221,6 +221,10 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 4px;
+            cursor: pointer;
+        }
+        .legend-item input {
+            cursor: pointer;
         }
         .legend-color {
             width: 14px;
@@ -313,10 +317,10 @@ HTML_TEMPLATE = """
             <button id="nextBtn" onclick="navigate(1)">Next &gt;</button>
         </div>
         <div class="legend">
-            <div class="legend-item"><div class="legend-color" style="border: 2px solid orange;"></div> ComposedBlock</div>
-            <div class="legend-item"><div class="legend-color" style="border: 3px solid magenta;"></div> Illustration</div>
-            <div class="legend-item"><div class="legend-color" style="border: 2px solid green;"></div> TextLine</div>
-            <div class="legend-item"><div class="legend-color" style="border: 2px solid blue;"></div> String</div>
+            <label class="legend-item"><input type="checkbox" id="showComposedBlock" checked onchange="reloadPage()"><div class="legend-color" style="border: 2px solid orange;"></div> ComposedBlock</label>
+            <label class="legend-item"><input type="checkbox" id="showIllustration" checked onchange="reloadPage()"><div class="legend-color" style="border: 3px solid magenta;"></div> Illustration</label>
+            <label class="legend-item"><input type="checkbox" id="showTextLine" checked onchange="reloadPage()"><div class="legend-color" style="border: 2px solid green;"></div> TextLine</label>
+            <label class="legend-item"><input type="checkbox" id="showString" checked onchange="reloadPage()"><div class="legend-color" style="border: 2px solid blue;"></div> String</label>
         </div>
         <div class="zoom-controls">
             <button onclick="adjustZoom(-1)">-</button>
@@ -354,6 +358,19 @@ HTML_TEMPLATE = """
                 document.getElementById('zoomLevel').textContent = zoomLevel + '%';
                 loadPage(currentIndex);
             }
+        }
+
+        function getVisibilityParams() {
+            return {
+                composedBlock: document.getElementById('showComposedBlock').checked,
+                illustration: document.getElementById('showIllustration').checked,
+                textLine: document.getElementById('showTextLine').checked,
+                string: document.getElementById('showString').checked
+            };
+        }
+
+        function reloadPage() {
+            loadPage(currentIndex);
         }
 
         // Synchronized scrolling
@@ -394,6 +411,7 @@ HTML_TEMPLATE = """
 
             try {
                 // Get page data
+                const vis = getVisibilityParams();
                 const response = await fetch(`/api/page/${index}?zoom=${zoomLevel}`);
                 const data = await response.json();
 
@@ -408,10 +426,11 @@ HTML_TEMPLATE = """
                     `Page ${currentIndex + 1} of ${totalPages}: ${data.filename}`;
 
                 // Load left panel (image with boxes)
+                const imgParams = `zoom=${zoomLevel}&composedBlock=${vis.composedBlock}&illustration=${vis.illustration}&textLine=${vis.textLine}&string=${vis.string}`;
                 leftPanel.innerHTML = `
                     <div class="canvas-container">
                         <div class="loading" id="imageLoading">Image is rendering...</div>
-                        <img src="/api/image/${index}?zoom=${zoomLevel}" alt="Page image" onload="document.getElementById('imageLoading').style.display='none'" style="display:none" onload="this.style.display='block'">
+                        <img src="/api/image/${index}?${imgParams}" alt="Page image" onload="document.getElementById('imageLoading').style.display='none'" style="display:none" onload="this.style.display='block'">
                     </div>
                 `;
                 // Show image when loaded
@@ -424,41 +443,48 @@ HTML_TEMPLATE = """
                 // Load right panel (all bounding boxes)
                 let textHtml = `<div class="text-overlay" style="width: ${data.display_width}px; height: ${data.display_height}px; position: relative;">`;
                 // Draw ComposedBlock boxes first (orange dashed, background)
-                for (const block of data.composed_blocks) {
-                    textHtml += `
-                        <div class="composed-block" style="
-                            left: ${block.x}px;
-                            top: ${block.y}px;
-                            width: ${block.width}px;
-                            height: ${block.height}px;
-                        "></div>
-                    `;
+                if (vis.composedBlock) {
+                    for (const block of data.composed_blocks) {
+                        textHtml += `
+                            <div class="composed-block" style="
+                                left: ${block.x}px;
+                                top: ${block.y}px;
+                                width: ${block.width}px;
+                                height: ${block.height}px;
+                            "></div>
+                        `;
+                    }
                 }
                 // Draw Illustration boxes (magenta)
-                for (const ill of data.illustrations) {
-                    textHtml += `
-                        <div class="illustration" style="
-                            left: ${ill.x}px;
-                            top: ${ill.y}px;
-                            width: ${ill.width}px;
-                            height: ${ill.height}px;
-                        "></div>
-                    `;
+                if (vis.illustration) {
+                    for (const ill of data.illustrations) {
+                        textHtml += `
+                            <div class="illustration" style="
+                                left: ${ill.x}px;
+                                top: ${ill.y}px;
+                                width: ${ill.width}px;
+                                height: ${ill.height}px;
+                            "></div>
+                        `;
+                    }
                 }
                 // Draw TextLine boxes (green)
-                for (const line of data.lines) {
-                    textHtml += `
-                        <div class="text-line" style="
-                            left: ${line.x}px;
-                            top: ${line.y}px;
-                            width: ${line.width}px;
-                            height: ${line.height}px;
-                        "></div>
-                    `;
+                if (vis.textLine) {
+                    for (const line of data.lines) {
+                        textHtml += `
+                            <div class="text-line" style="
+                                left: ${line.x}px;
+                                top: ${line.y}px;
+                                width: ${line.width}px;
+                                height: ${line.height}px;
+                            "></div>
+                        `;
+                    }
                 }
-                // Draw String boxes on top (blue)
+                // Draw String boxes on top (blue) - always show text, border is optional
                 for (const box of data.boxes) {
                     const fontSize = Math.max(8, Math.floor(box.height * 0.7));
+                    const borderStyle = vis.string ? '1px dashed blue' : 'none';
                     textHtml += `
                         <div class="text-box" style="
                             left: ${box.x}px;
@@ -466,6 +492,7 @@ HTML_TEMPLATE = """
                             width: ${box.width}px;
                             height: ${box.height}px;
                             font-size: ${fontSize}px;
+                            border: ${borderStyle};
                         ">${escapeHtml(box.content)}</div>
                     `;
                 }
@@ -643,6 +670,12 @@ def api_image(index: int):
     zoom = int(request.args.get("zoom", 100))
     zoom_factor = zoom / 100.0
 
+    # Get visibility settings
+    show_composed_block = request.args.get("composedBlock", "true") == "true"
+    show_illustration = request.args.get("illustration", "true") == "true"
+    show_text_line = request.args.get("textLine", "true") == "true"
+    show_string = request.args.get("string", "true") == "true"
+
     try:
         image = Image.open(image_path)
 
@@ -662,37 +695,41 @@ def api_image(index: int):
         # Draw bounding boxes on image
         draw = ImageDraw.Draw(image)
 
-        # Draw ComposedBlock boxes in orange (dashed effect via multiple rectangles)
-        for block in composed_blocks:
-            x1 = int(block.x * box_scale_x)
-            y1 = int(block.y * box_scale_y)
-            x2 = int((block.x + block.width) * box_scale_x)
-            y2 = int((block.y + block.height) * box_scale_y)
-            draw.rectangle([x1, y1, x2, y2], outline="orange", width=2)
+        # Draw ComposedBlock boxes in orange
+        if show_composed_block:
+            for block in composed_blocks:
+                x1 = int(block.x * box_scale_x)
+                y1 = int(block.y * box_scale_y)
+                x2 = int((block.x + block.width) * box_scale_x)
+                y2 = int((block.y + block.height) * box_scale_y)
+                draw.rectangle([x1, y1, x2, y2], outline="orange", width=2)
 
         # Draw Illustration boxes in magenta
-        for ill in illustrations:
-            x1 = int(ill.x * box_scale_x)
-            y1 = int(ill.y * box_scale_y)
-            x2 = int((ill.x + ill.width) * box_scale_x)
-            y2 = int((ill.y + ill.height) * box_scale_y)
-            draw.rectangle([x1, y1, x2, y2], outline="magenta", width=3)
+        if show_illustration:
+            for ill in illustrations:
+                x1 = int(ill.x * box_scale_x)
+                y1 = int(ill.y * box_scale_y)
+                x2 = int((ill.x + ill.width) * box_scale_x)
+                y2 = int((ill.y + ill.height) * box_scale_y)
+                draw.rectangle([x1, y1, x2, y2], outline="magenta", width=3)
 
         # Draw TextLine boxes in green
-        for line in lines:
-            x1 = int(line.x * box_scale_x)
-            y1 = int(line.y * box_scale_y)
-            x2 = int((line.x + line.width) * box_scale_x)
-            y2 = int((line.y + line.height) * box_scale_y)
-            draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
+        if show_text_line:
+            for line in lines:
+                x1 = int(line.x * box_scale_x)
+                y1 = int(line.y * box_scale_y)
+                x2 = int((line.x + line.width) * box_scale_x)
+                y2 = int((line.y + line.height) * box_scale_y)
+                draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
 
         # Draw String boxes in blue
-        for box in boxes:
-            x1 = int(box.x * box_scale_x)
-            y1 = int(box.y * box_scale_y)
-            x2 = int((box.x + box.width) * box_scale_x)
-            y2 = int((box.y + box.height) * box_scale_y)
-            draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+        if show_string:
+            for box in boxes:
+                x1 = int(box.x * box_scale_x)
+                y1 = int(box.y * box_scale_y)
+                x2 = int((box.x + box.width) * box_scale_x)
+                y2 = int((box.y + box.height) * box_scale_y)
+                draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
 
         # Resize for display
         image = image.resize((display_width, display_height), Image.Resampling.LANCZOS)
