@@ -34,7 +34,7 @@ def unpack_directory(source_dir: str):
         with tarfile.open(tar_path, "r") as tar:
             tar.extractall(path=extract_dir)
 
-        print(f"  Done!")
+        print("  Done!")
 
 
 if __name__ == "__main__":
